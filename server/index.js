@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import Replicate from "replicate";
+import axios from "axios";
 
 dotenv.config();
 
@@ -9,38 +9,60 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const replicate = new Replicate({
-  auth: process.env.REPLICATE_API_TOKEN,
-});
+const PERPLEXITY_API_KEY = process.env.PERPLEXITY_API_TOKEN;
 
 app.post("/api/generate", async (req, res) => {
-  let { prompt } = req.body;
-
+  const { prompt } = req.body;
   if (!prompt?.trim()) {
     return res.status(400).json({ error: "Prompt is required" });
   }
-
   console.log("➡️ Received prompt:", prompt);
 
   try {
-    const output = await replicate.run(
-      "stability-ai/sdxl", // model
+    const response = await axios.post(
+      "https://api.perplexity.ai/chat/completions",
       {
-        input: {
-          prompt: prompt,
-          width: 1024,
-          height: 1024,
-        },
+        model: "sonar",
+        return_images: true,
+        messages: [{ role: "user", content: prompt }]
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${PERPLEXITY_API_KEY}`,
+          "Content-Type": "application/json"
+        }
       }
     );
+    console.log("🧾 Perplexity response data:", JSON.stringify(response.data, null, 2));
 
-    console.log("✅ Output:", output);
 
-    // output is an array of image URLs
-    res.json({ url: output[0] });
+    const images = response.data.images || (response.data.choices && response.data.choices[0].images);
+    const imageUrl = images?.[0]?.image_url || null;
+
+    if (!imageUrl) {
+      throw new Error("No image returned from Perplexity");
+    }
+
+    console.log("✅ Output:", imageUrl);
+    res.json({ url: imageUrl }); // Keep `url` as key
   } catch (error) {
-    console.error("❌ Generation failed:", error.message);
-    res.status(500).json({ error: error.message });
+    console.error("❌ Generation failed:", error?.response?.data || error.message);
+    res.status(500).json({ error: error.message || "Failed to generate image" });
+  }
+});
+
+// ✅ NEW: proxy route to serve image bypassing CORS
+app.get("/proxy", async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).send("Missing url param");
+
+  try {
+    const imageResponse = await axios.get(url, { responseType: "stream" });
+    res.setHeader("Content-Type", imageResponse.headers["content-type"]);
+    imageResponse.data.pipe(res);
+  } catch (err) {
+    console.error("❌ Proxy error:", err.message);
+    res.status(500).send("Failed to load image");
   }
 });
 
